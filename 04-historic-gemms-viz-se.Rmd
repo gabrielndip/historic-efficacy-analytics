@@ -1,0 +1,135 @@
+---
+title: "Historic data in vehicle + AZD4625-treated P53 GEMMs"
+subtitle: Data exploration and visualization
+author: "Gabriel Teku"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+## colourblind-friendly colours for ggplot
+cbb_palette <- c(
+  "#000000", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#0099C6", "#C7A92A", "#009E73",
+  "#5A9F9F", "#F8766D", "#C49A00", "#F2C80F", "#993D3D",
+  "#4F5D75", "#0089A3", "#A8A878", "#63C5DA", "#79A779"
+)
+
+options(digits = 5, tibble.print_max = 10^6)
+
+if (dir.exists("figures-se")) unlink("figures", recursive = TRUE)
+dir.create("figures-se")
+```
+
+
+# Load cleaned data
+
+```{r load-data, echo=FALSE}
+dt <- read_rds("clean-data.rds")
+
+dt %>% distinct(study)
+
+dt_se <- dt %>% filter(study %in% c("0279-09", "0279-14", "1437-58"))
+
+dt_se %>% slice_sample(n=5)
+
+# drop levels mutation
+with(dt_se, table(mutation)) 
+# drop levels trt: AZD4625 + AZD6738, AZD4625 + Cisplatin, Cisplatin 
+with(dt_se, table(trt))
+
+dt_se_flt <- dt_se %>% 
+    filter(
+        !trt %in% c("AZD4625 + AZD6738", "AZD4625 + Cisplatin", "Cisplatin" )
+    ) %>% 
+    filter(!mutation == "stk11") %>% 
+    mutate(
+        mutation = fct_drop(mutation),
+        trt = fct_drop(trt)
+    )
+
+dt_se_flt <- dt_se_flt %>% 
+    mutate(trt = relevel(trt, ref = "Vehicle"),
+           timepoint = relevel(timepoint, "baseline")
+    )
+
+write_rds(dt_se_flt, "clean-data-se.rds", "xz", compression = 9L)
+```
+
+
+# Explore the data
+
+```{r eda, echo=FALSE}
+dt_se_flt %>% distinct(study)
+dt_se_flt %>% distinct(trt)
+dt_se_flt %>% distinct(study, trt)
+dt_se_flt %>% distinct(study, timepoint)
+dt_se_flt %>% distinct(study, timepoint, trt)
+dt_se_flt %>% count(study, timepoint, trt)
+dt_se_flt %>% count(trt, study)
+
+hist(dt_se_flt$voxels)
+hist(dt_se_flt$log_voxels)
+```
+
+
+# Visualize the data
+
+1. aim to visualise growth of vehicles across studies/mutations
+2. first, to visualise efficacy of 4625 monotherapy
+
+
+```{r viz-vehicle-4625_se}
+dt_se_flt %>% 
+    filter(trt == "Vehicle") %>% 
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_point() +
+    stat_summary(fun = "mean", geom = "line") +
+    geom_smooth() +
+    facet_wrap(~ study) + 
+    theme_bw() +
+    theme(text = element_text(face = "bold"),
+          legend.position = "none") +
+    ggtitle("Vehicle growth across studies: Sweden studies")
+ggsave("figures-se/vehicle-trend-log-scale-se.png")
+
+dt_se_flt %>% 
+    filter(trt %in% c("Vehicle", "AZD4625")) %>% 
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_jitter(width = 0.2, alpha = 0.6) +
+    stat_summary(fun = "mean", geom = "point", size = 5) +
+    geom_smooth() +
+    scale_colour_manual(values = cbb_palette) +
+    labs(color = "Treatment", caption = "Studies performed in Sweden") +
+    ggtitle("AZD4625 mono vs Vehicle growth for p53 knockout: Sweden studies") +
+    theme_bw() +
+    theme(text = element_text(face = "bold")) 
+ggsave("figures-se/azd4625-vehicle-trend-log-scale-se.png")
+
+dt_se_flt %>% 
+    filter(
+        trt %in% c("Vehicle", "AZD4625", "Cisplatin + PD-L1")
+        ) %>%   
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_point() +
+    stat_summary(fun = "mean", geom = "line") +
+    facet_wrap(~ interaction(study, mutation)) + 
+    scale_colour_manual(values = cbb_palette) +
+    labs(color = "Treatment",
+         title = "AZD4625, Cisplatin + PD-L1 vs Vehicle: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold")) 
+ggsave("figures-se/azd4625-vehicle-trend-log-scale-se.png")
+```
+
+
+# Session info
+
+```{r ws-info, echo=FALSE, include = FALSE }
+sessionInfo()
+```

@@ -1,0 +1,791 @@
+---
+title: "Historic data in vehicle + Alpha-treated GEMMs"
+subtitle: "Statistical analysis of data from Sv"
+author: "Gabriel Teku"
+date: "2024-03-06"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(emmeans)
+library(rstan)
+library(rstanarm)
+library(bayesplot)
+library(brms)
+library(loo)
+
+set.seed <- 1234
+
+## colourblind-friendly colours for ggplot
+cbb_palette <- c(
+  "#000000", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#0099C6", "#C7A92A", "#009E73",
+  "#5A9F9F", "#F8766D", "#C49A00", "#F2C80F", "#993D3D",
+  "#4F5D75", "#0089A3", "#A8A878", "#63C5DA", "#79A779"
+)
+
+options(digits = 5, tibble.print_max = 10^6, mc.cores = 4)
+
+if (file.exists("05-data.RData")) load("05-data.RData")
+```
+
+
+# Load and filter data
+
+```{r load-cleaned-data, echo=FALSE}
+dt <- read_rds("clean-data-se.rds")
+```
+
+
+# Statistical inference 
+
+## Fit Bayesian mixed effects model 
+
+Interested in picking up trt effects & effects of treatment over time. 
+Does this differ between mutation statuses?
+Consider study as random effect with sampling from the entire study space.
+
+### Vehicle vs Alpha mono
+
+```{r fit-vehicle-vs-Alpha-mono_se}
+# Extract subset of data
+mod_df_4625mono_se <- dt %>% 
+    filter(trt %in% c("Vehicle", "Alpha")) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove)) %>% 
+    droplevels()
+studies_df_4625mono_se <- mod_df_4625mono_se %>% distinct(study)
+studies_df_4625mono_se
+
+mod_df_4625mono_se_t1_t2 <- mod_df_4625mono_se %>% 
+    filter(timepoint %in% c("baseline", "1week") ) %>% droplevels()
+studies_df_4625mono_se_t1_t2 <- mod_df_4625mono_se_t1_t2 %>% distinct(study)
+studies_df_4625mono_se_t1_t2
+
+# Fit model
+mod_4625mono_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                          data = mod_df_4625mono_se,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 5000)
+mod_4625mono_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                          data = mod_df_4625mono_se_t1_t2,
+                          adapt_delta = 0.999,
+                          seed = 1234,
+                          iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625mono_se)
+summary(mod_4625mono_se_t1_t2)
+mod_4625mono_se
+mod_4625mono_se_t1_t2
+
+## Posterior Predictive Checks
+pp_check(mod_4625mono_se)
+pp_check(mod_4625mono_se_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625mono_se <- as.matrix(mod_4625mono_se)
+mcmc_trace(posterior_mod_4625mono_se, regex_pars = "trt")
+
+posterior_mod_4625mono_se_t1_t2 <- as.matrix(mod_4625mono_se_t1_t2)
+mcmc_trace(posterior_mod_4625mono_se_t1_t2, regex_pars = "trt")
+
+## Model performance
+# (loo_4625mono_se <- loo(mod_4625mono_se, k_threshold = 0.7))
+# (loo_4625mono_se_t1_t2 <- loo(mod_4625mono_se_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625mono_se)
+stan_diag(mod_4625mono_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625mono_se_ar <- mcmc_areas_ridges(posterior_mod_4625mono_se, 
+                       regex_pars = "trt",
+                       prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha mono vs Vehicle: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625mono_se_ar
+ggsave("figures-se-se/fit-posterior-Alpha-vehicle-se.png", plt_4625mono_se_ar)
+#
+plt_4625mono_se_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625mono_se_t1_t2, 
+                       regex_pars = "trt", 
+                       prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha mono vs Vehicle: baseline and 1 week, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625mono_se_ar_t1_t2
+ggsave("figures-se/fit-posterior-Alpha-vehicle-se.png", plt_4625mono_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+### Vehicle vs Alpha combo
+
+```{r fit-model-vehicle-vs-4625combo_se}
+# Extract subset of data
+mod_df_4625combo_se <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|Alpha +"))) %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625combo_se <- mod_df_4625combo_se %>% distinct(study)
+#
+mod_df_4625combo_se_t1_t2 <- mod_df_4625combo_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625combo_se_t1_t2 <- mod_df_4625combo_se_t1_t2 %>% distinct(study)
+
+# Fit model
+mod_4625combo_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                           data = mod_df_4625combo_se,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 6000)
+mod_4625combo_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                          data = mod_df_4625combo_se_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625combo_se) 
+summary(mod_4625combo_se_t1_t2) 
+
+## Posterior Predictive Checks
+pp_check(mod_4625combo_se)
+pp_check(mod_4625combo_se_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625combo_se <- as.matrix(mod_4625combo_se)
+mcmc_trace(posterior_mod_4625combo_se, regex_pars = "trt")
+
+posterior_mod_4625combo_se_t1_t2 <- as.matrix(mod_4625combo_se_t1_t2)
+mcmc_trace(posterior_mod_4625combo_se_t1_t2, regex_pars = "trt")
+
+## Model performance
+# (loo_4625combo_se <- loo(mod_4625combo_se, k_threshold = 0.7))
+# (loo_4625combo_se_t1_t2 <- loo(mod_4625combo_se_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625combo_se)
+stan_diag(mod_4625combo_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625combo_se_ar <- mcmc_areas_ridges(posterior_mod_4625combo_se, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha combo vs Vehicle: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_se_ar 
+ggsave("figures-se/fit-posterior-Alphacombo_se-vs-vehicle-se.png", plt_4625combo_se_ar)
+
+plt_4625combo_se_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625combo_se_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha combo vs Vehicle: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_se_ar_t1_t2 
+ggsave("figures-se/fit-posterior-Alphacombo_se-vs-vehicle-t1-t2-se.png",
+       plt_4625combo_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+### Vehicle vs Alpha mono + combo
+
+```{r fit-model-vehicle-vs-4625moco_se}
+# Extract subset of data
+mod_df_4625moco_se <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|Alpha"))) %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625moco_se <- mod_df_4625moco_se %>% distinct(study)
+#
+mod_df_4625moco_se_t1_t2 <- mod_df_4625moco_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625moco_se_t1_t2 <- mod_df_4625moco_se_t1_t2 %>% distinct(study)
+
+# Fit model
+mod_4625moco_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                           data = mod_df_4625moco_se,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625moco_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                          data = mod_df_4625moco_se_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625moco_se) 
+summary(mod_4625moco_se_t1_t2) 
+
+## Posterior Predictive Checks
+pp_check(mod_4625moco_se)
+pp_check(mod_4625moco_se_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625moco_se <- as.matrix(mod_4625moco_se)
+mcmc_trace(posterior_mod_4625moco_se, regex_pars = "trt")
+
+posterior_mod_4625moco_se_t1_t2 <- as.matrix(mod_4625moco_se_t1_t2)
+mcmc_trace(posterior_mod_4625moco_se_t1_t2, regex_pars = "trt")
+
+## Model performance
+# (loo_4625moco_se <- loo(mod_4625moco_se, k_threshold = 0.7))
+# (loo_4625moco_se_t1_t2 <- loo(mod_4625moco_se_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625moco_se)
+stan_diag(mod_4625moco_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625moco_se_ar <- mcmc_areas_ridges(posterior_mod_4625moco_se, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs Alpha mono + combo: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_se_ar 
+ggsave("figures-se/fit-posterior-Alphamoco_se-vs-vehicle-se.png", plt_4625moco_se_ar)
+
+plt_4625moco_se_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625moco_se_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs Alpha mono + combo: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_se_ar_t1_t2 
+ggsave("figures-se/fit-posterior-Alphamoco_se-vs-vehicle-t1-t2-se.png",
+       plt_4625moco_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+
+
+### Alpha mono vs Alpha combo
+
+```{r fit-model-4625mono-vs-4625combo_se}
+# Extract subset of data
+mod_df_4625monoco_se <- dt %>% 
+    filter(str_detect(trt, c("Alpha"))) %>%
+    mutate(trt = relevel(trt, ref = "Alpha")) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625monoco_se <- mod_df_4625monoco_se %>% distinct(study)
+#
+mod_df_4625monoco_se_t1_t2 <- mod_df_4625monoco_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625monoco_se_t1_t2 <- mod_df_4625monoco_se_t1_t2 %>% distinct(study)
+
+# Fit model
+mod_4625monoco_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                           data = mod_df_4625monoco_se,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625monoco_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                          data = mod_df_4625monoco_se_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625monoco_se) 
+summary(mod_4625monoco_se_t1_t2) 
+
+## Posterior Predictive Checks
+pp_check(mod_4625monoco_se)
+pp_check(mod_4625monoco_se_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625monoco_se <- as.matrix(mod_4625monoco_se)
+mcmc_trace(posterior_mod_4625monoco_se, regex_pars = "trt")
+
+posterior_mod_4625monoco_se_t1_t2 <- as.matrix(mod_4625monoco_se_t1_t2)
+mcmc_trace(posterior_mod_4625monoco_se_t1_t2, regex_pars = "trt")
+
+## Model performance
+# (loo_4625monoco_se <- loo(mod_4625monoco_se, k_threshold = 0.7))
+# (loo_4625monoco_se_t1_t2 <- loo(mod_4625monoco_se_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625monoco_se)
+stan_diag(mod_4625monoco_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625monoco_se_ar <- mcmc_areas_ridges(posterior_mod_4625monoco_se, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Alpha mono",
+         title = "Alpha mono vs Alpha combo: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_se_ar 
+ggsave("figures-se/fit-posterior-Alphacombo-vs-Alphamono-se.png", 
+       plt_4625monoco_se_ar)
+
+plt_4625monoco_se_ar_t1_t2 <- mcmc_areas_ridges(
+    posterior_mod_4625monoco_se_t1_t2, 
+    regex_pars = "trt", 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Alpha mono",
+         title = "Alpha mono vs Alpha combo: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_se_ar_t1_t2 
+ggsave("figures-se/fit-posterior-Alphacombo-vs-Alphamono-t1-t2-se.png",
+       plt_4625monoco_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+
+### Alpha mono vs All Other treatments
+
+```{r fit-4625ref_se-vs-trts}
+# Subset data
+mod_df_4625ref_se <- dt %>% 
+    mutate(trt = relevel(trt, "Alpha")) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625ref_se <- mod_df_4625ref_se %>% distinct(study, mutation)
+
+mod_df_4625ref_se_t1_t2 <- mod_df_4625ref_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625ref_se_t1_t2 <- mod_df_4625ref_se_t1_t2 %>% 
+    distinct(study, mutation)
+
+# Fit model
+mod_4625ref_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                           data = mod_df_4625ref_se,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625ref_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                           data = mod_df_4625ref_se_t1_t2,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625ref_se)
+summary(mod_4625ref_se_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_4625ref_se)
+pp_check(mod_4625ref_se_t1_t2)
+
+## Model performance
+# (loo_4625ref_se <- loo(mod_4625ref_se, k_threshold = 0.7))
+# (loo_4625ref_se_t1_t2 <- loo(mod_4625ref_se_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_4625ref_se <- as.matrix(mod_4625ref_se)
+mcmc_trace(posterior_mod_4625ref_se, regex_pars = "trt")
+
+posterior_mod_4625ref_se_t1_t2 <- as.matrix(mod_4625ref_se_t1_t2)
+mcmc_trace(posterior_mod_4625ref_se_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_4625ref_se)
+stan_diag(mod_4625ref_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625ref_se_ar <- mcmc_areas_ridges(posterior_mod_4625ref_se, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Alpha: Sweden studies",
+         title = "Alpha mono vs All Other treatments: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_se_ar 
+ggsave("figures-se/fit-posterior-trts-vs-Alpharef_se.png", plt_4625ref_se_ar)
+#
+plt_4625ref_se_ar_t1_t2 <- mcmc_areas_ridges(
+    posterior_mod_4625ref_se_t1_t2, 
+    pars = vars(starts_with("trt")), 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Alpha",
+         title = "Alpha mono vs All Other Treatments: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_se_ar_t1_t2 
+ggsave("figures-se/fit-posterior-trts-vs-Alpharef_se-t1-t2.png",
+       plt_4625ref_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+### Vehicle vs AZD6738 mono + combo
+
+```{r fit-model-vehicle-vs-6738_moco-se}
+# Extract subset of data
+mod_df_6738moco_se <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|AZD6738"))) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_6738moco_se <- mod_df_6738moco_se %>% distinct(study)
+
+mod_df_6738moco_se_t1_t2 <- mod_df_6738moco_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_6738moco_se_t1_t2 <- mod_df_6738moco_se_t1_t2 %>% distinct(study)
+
+# Fit model
+mod_6738moco_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                   data = mod_df_6738moco_se,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 5000)
+mod_6738moco_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                   data = mod_df_6738moco_se_t1_t2,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_6738moco_se)
+summary(mod_6738moco_se_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_6738moco_se)
+pp_check(mod_6738moco_se_t1_t2)
+
+## Model performance
+# (loo_6738moco_se <- loo(mod_6738moco_se, k_threshold = 0.7))
+# (loo_6738moco_se_t1_t2 <- loo(mod_6738moco_se_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_6738moco_se <- as.matrix(mod_6738moco_se)
+mcmc_trace(posterior_mod_6738moco_se, regex_pars = "trt")
+
+posterior_mod_6738moco_se_t1_t2 <- as.matrix(mod_6738moco_se_t1_t2)
+mcmc_trace(posterior_mod_6738moco_se_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_6738moco_se)
+stan_diag(mod_6738moco_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_6738moco_se_ar <- mcmc_areas_ridges(posterior_mod_6738moco_se, 
+                                          regex_pars = "trt", 
+                                          prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD6738 combo + mono vs Vehicle: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_6738moco_se_ar 
+ggsave("figures-se/fit-posterior-azd6738-mono-combo-vs-vehicle-se.png",
+       plt_6738moco_se_ar)
+#
+plt_6738moco_se_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_6738moco_se_t1_t2, 
+                                          regex_pars = "trt", 
+                                          prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD6738 combo + mono vs Vehicle: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_6738moco_se_ar_t1_t2
+ggsave("figures-se/fit-posterior-azd6738-mono-combo-vs-vehicle-t1-t2-se.png",
+       plt_6738moco_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+ 
+
+### Vehicle vs Cisplatin combo
+
+```{r fit-model-vehicle-vs-cisplatin-combo-se}
+# Extract subset of data
+mod_df_cis_combo_se <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|Cisplatin"))) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_cis_combo_se <- mod_df_cis_combo_se %>% distinct(study)
+
+mod_df_cis_combo_se_t1_t2 <- mod_df_cis_combo_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_cis_combo_se_t1_t2 <- mod_df_cis_combo_se_t1_t2 %>% distinct(study)
+
+# Fit model
+mod_cis_combo_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                   data = mod_df_cis_combo_se,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+mod_cis_combo_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                   data = mod_df_cis_combo_se_t1_t2,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_cis_combo_se) 
+summary(mod_cis_combo_se_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_cis_combo_se)
+pp_check(mod_cis_combo_se_t1_t2)
+
+## Model performance
+# (loo_cis_combo_se <- loo(mod_cis_combo_se, k_threshold = 0.7))
+# (loo_cis_combo_se_t1_t2 <- loo(mod_cis_combo_se_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_cis_combo_se <- as.matrix(mod_cis_combo_se)
+mcmc_trace(posterior_mod_cis_combo_se, regex_pars = "trt")
+
+posterior_mod_cis_combo_se_t1_t2 <- as.matrix(mod_cis_combo_se_t1_t2)
+mcmc_trace(posterior_mod_cis_combo_se_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_cis_combo_se)
+stan_diag(mod_cis_combo_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_cis_combo_se_ar <- mcmc_areas_ridges(posterior_mod_cis_combo_se, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Cisplatin combo vs Vehicle: Sweden studies", 
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_combo_se_ar
+ggsave("figures-se/fit-posterior-cisplatin-mono-combo-vs-vehicle-se.png",
+       plt_cis_combo_se_ar)
+#
+plt_cis_combo_se_ar_t1_t2 <- mcmc_areas_ridges(
+    posterior_mod_cis_combo_se_t1_t2, 
+    regex_pars = "trt", 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") + 
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Cisplatin combo vs Vehicle: baseline and 2 weeks, Sweden studies", 
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_combo_se_ar_t1_t2
+ggsave("figures-se/fit-posterior-cisplatin-mono-combo-vs-vehicle-t1-t2-se.png",
+       plt_cis_combo_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+
+### Vehicle vs Alpha, Cisplatin, Cisplatin + PD-L1 combo
+
+```{r fit_model_veh_4625_cisplatin-moco-se}
+# Extract subset of data
+mod_df_4625cis_moco_se <- dt %>% 
+    filter(
+        trt %in% c("Vehicle", "Alpha", "Cisplatin + PD-L1")
+    ) %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625cis_moco_se <- mod_df_4625cis_moco_se %>% distinct(study)
+
+mod_df_4625cis_moco_se_t1_t2 <- mod_df_4625cis_moco_se %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625cis_moco_se_t1_t2 <- mod_df_4625cis_moco_se_t1_t2 %>%
+    distinct(study)
+
+# Fit model
+mod_4625cis_moco_se <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                              data = mod_df_4625cis_moco_se,
+                              adapt_delta = 0.9999,
+                              seed = 1234,
+                              iter = 5000)
+mod_4625cis_moco_se_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint + (1|study),
+                              data = mod_df_4625cis_moco_se_t1_t2,
+                              adapt_delta = 0.9999,
+                              seed = 1234,
+                              iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625cis_moco_se) 
+summary(mod_4625cis_moco_se_t1_t2) 
+
+## Posterior Predictive Checks
+pp_check(mod_4625cis_moco_se)
+pp_check(mod_4625cis_moco_se_t1_t2)
+
+## Model performance
+# (loo_4625cis_moco_se <- loo(mod_4625cis_moco_se, k_threshold = 0.7))
+# (loo_4625cis_moco_se_t1_t2 <- loo(mod_4625cis_moco_se_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_4625cis_moco_se <- as.matrix(mod_4625cis_moco_se)
+mcmc_trace(posterior_mod_4625cis_moco_se, regex_pars = "trt")
+
+posterior_mod_4625cis_moco_se_t1_t2 <- as.matrix(mod_4625cis_moco_se_t1_t2)
+mcmc_trace(posterior_mod_4625cis_moco_se_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_4625cis_moco_se)
+stan_diag(mod_4625cis_moco_se_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625cis_moco_se_ar <- mcmc_areas_ridges(posterior_mod_4625cis_moco_se, 
+                                              regex_pars = "trt", 
+                                              prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha, Cisplatin + PD-L1 vs Vehicle: Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_se_ar 
+ggsave("figures-se/fit-posterior-4625cisplatin-moco-vs-vehicle-se.png",
+       plt_4625cis_moco_se_ar)
+#
+plt_4625cis_moco_se_ar_t1_t2 <- mcmc_areas_ridges(
+    posterior_mod_4625cis_moco_se_t1_t2, 
+    regex_pars = "trt", 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Alpha, Cisplatin + PD-L1 vs Vehicle: baseline and 2 weeks, Sweden studies",
+         caption = "Studies performed in Sweden") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_se_ar_t1_t2 
+ggsave("figures-se/fit-posterior-4625cisplatin-moco-vs-vehicle-t1-t2-se.png",
+       plt_4625cis_moco_se_ar_t1_t2)
+
+save.image("05-data.RData")
+beepr::beep()
+```
+
+
+## Conclusions for all fitted models above
+
+All MCSEs were 0.0 except for log-posterior, which is 0.1. Thus, no sample had substantial level of noise. 
+
+Rhat values were all 1.0, indicating convergence and equilibrium of
+simulated chains. 
+
+The size of the ESSs were large, suggesting the simulated
+chains were well mixed. 
+
+The trace plots confirm convergence and mixing.   
+
+The posterior predictive plots shows fairly close agreement between the model 
+and data. The results of the `loo(.)` suggests that the predictive performance
+of the fitted models were well assessed.   
+
+The diagnostic plots indicates fairly explored posterior distribution.   
+
+
+
+# Session info
+
+```{r ws-info, echo=FALSE, include = FALSE }
+save.image("05-data.RData")
+
+sessionInfo()
+```

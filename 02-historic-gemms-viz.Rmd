@@ -1,0 +1,111 @@
+---
+title: "Historic data in vehicle + AZD4625-treated P53 GEMMs"
+subtitle: Data exploration and visualization
+author: "Gabriel Teku"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+## colourblind-friendly colours for ggplot
+cbb_palette <- c(
+  "#000000", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#0099C6", "#C7A92A", "#009E73",
+  "#5A9F9F", "#F8766D", "#C49A00", "#F2C80F", "#993D3D",
+  "#4F5D75", "#0089A3", "#A8A878", "#63C5DA", "#79A779"
+)
+
+options(digits = 5, tibble.print_max = 10^6)
+
+if (dir.exists("figures")) unlink("figures", recursive = TRUE)
+dir.create("figures")
+```
+
+
+# Load cleaned data
+
+```{r load-data, echo=FALSE}
+dt <- read_rds("clean-data.rds")
+```
+
+
+# Explore the data
+
+```{r eda, echo=FALSE}
+# Treatments in multiple Studies
+itrts <- c("AZD4625", "PD-L1", "Cisplatin", "AZD6738", "Vehicle")
+get_trt2study <- function(df, strings) {
+    map(strings, ~ df %>%
+                filter(str_detect(trt, .x)) %>%
+                distinct(study, .keep_all = T))
+}
+get_trt2study(dt, itrts)
+
+hist(dt$voxels)
+hist(dt$log_voxels)
+```
+
+
+# Visualize the data
+
+1. aim to visualise growth of vehicles across studies/mutations
+2. first, to visualise efficacy of 4625 monotherapy
+
+
+```{r viz-vehicle-4625}
+dt %>% 
+    filter(trt == "Vehicle") %>% 
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_point() +
+    stat_summary(fun = "mean", geom = "line") +
+    geom_smooth() +
+    facet_wrap(~ study) + 
+    theme_bw() +
+    theme(text = element_text(face = "bold"),
+          legend.position = "none") +
+    ggtitle("Vehicle growth across all studies")
+ggsave("figures/vehicle-trend-log-scale.png")
+
+dt %>% 
+    filter(trt %in% c("Vehicle", "AZD4625")) %>% 
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_jitter(width = 0.2, alpha = 0.6) +
+    stat_summary(fun = "mean", geom = "point", size = 5) +
+    geom_smooth() +
+    facet_wrap(~ mutation) +
+    scale_colour_manual(values = cbb_palette) +
+    labs(color = "Treatment",
+    title = "AZD4625 mono vs Vehicle growth within genetic status: all studies"
+    ) +
+    theme_bw() +
+    theme(text = element_text(face = "bold")) 
+ggsave("figures/azd4625-vehicle-trend-log-scale.png")
+
+dt %>% 
+    filter(
+        trt %in% c("Vehicle", "AZD4625", "Cisplatin", "Cisplatin + PD-L1")
+        ) %>%   
+    ggplot(aes(x = timepoint, y = log_voxels, colour = trt, group = trt)) +
+    geom_point() +
+    stat_summary(fun = "mean", geom = "line") +
+    facet_wrap(~ interaction(study, mutation)) + 
+    scale_colour_manual(values = cbb_palette) +
+    labs(color = "Treatment",
+         title = "AZD4625, Cisplatin, Cisplatin + PD-L1 vs Vehicle: all studies"
+         ) +
+    theme_bw() +
+    theme(text = element_text(face = "bold")) 
+ggsave("figures/azd4625-vehicle-trend-log-scale.png")
+```
+
+
+# Session info
+
+```{r ws-info, echo=FALSE, include = FALSE }
+save.image("02-data.RData")
+sessionInfo()
+```

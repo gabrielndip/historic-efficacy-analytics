@@ -1,0 +1,117 @@
+---
+title: "Historic data in vehicle + Alpha-treated GEMMs"
+subtitle: Data preparation
+author: "Gabriel Teku"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+suppressPackageStartupMessages(library(tidyverse))
+library(openxlsx)
+
+set.seed <- 1234
+
+# colourblind-friendly colours for ggplot
+cbb_palette <- c(
+  "#000000", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#0099C6", "#C7A92A", "#009E73",
+  "#5A9F9F", "#F8766D", "#C49A00", "#F2C80F", "#993D3D",
+  "#4F5D75", "#0089A3", "#A8A878", "#63C5DA", "#79A779"
+)
+
+options(digits = 5, tibble.print_max = 10^6)
+```
+
+
+# Included studies
+
+```{r included-study, echo=FALSE}
+study_names <- list.files("data")
+study <- study_names %>%
+    map(., ~ str_split(.x, "_")) %>%
+    Map(
+        function(x, y) x[[1]][y], .,
+        list(c(2), c(2), c(3), c(2), c(2), c(2), c(1), c(1), c(1), c(1))
+    ) %>%
+    unlist() %>% 
+    map2(., c(rep(5, 3), rep(6, 3), rep(8, 4)), ~str_sub(.x, .y, -1)) %>% 
+    unlist()
+dt_study <- data.frame(Study = study_names, Shortened_study_name = study)
+dt_study %>% dplyr::select(-Study)
+# dt_study %>% write.xlsx(., "tables/table_study.xlsx")
+```
+
+
+# Load cleaned data
+
+```{r load-data, echo=FALSE}
+files <- list.files("clean-data", "\\.csv$", full.names = TRUE)
+dfs <- files %>%
+  setNames(tools::file_path_sans_ext(basename(files))) %>%
+  map(~ read_csv(., show_col_types = F))
+```
+
+
+# Wrangle data
+
+```{r whip-data-together, echo=FALSE}
+dt <- dfs %>% 
+    map(~ select(
+        .x,
+        all_of(c("animal_id", "trt", "timepoint", "voxels", "log_voxels"))
+    )) %>% 
+    map( ~ mutate(.x, animal_id = as.character(animal_id))) %>%
+    imap(~ mutate(.x, study     = str_replace(.y, "dt_", ""),
+                  animal_id = str_c(animal_id, study, sep = ":"))) %>%
+    bind_rows() %>% 
+    # fix time points
+    mutate(
+        timepoint = case_when(
+            str_detect(timepoint, "2week|2weeks") ~ "2weeks",
+            str_detect(timepoint, "3week|3weeks") ~ "3weeks",
+            str_detect(timepoint, "4week|4weeks") ~ "4weeks",
+            str_detect(timepoint, "6week|6weeks") ~ "6weeks",
+            .default = timepoint),
+        timepoint = fct_relevel(timepoint, "baseline", "1week", "2weeks", 
+                                "3weeks","4weeks", "6weeks")
+    )
+```
+
+
+# Add  mutation data
+
+```{r gene-mutation, echo=FALSE}
+dt <- dt %>% 
+    left_join(read.xlsx("mut-data.xlsx", cols = 2:3), by = "study") %>% 
+    mutate(across(where(is.character), as.factor)) %>% 
+    mutate(trt = relevel(trt, ref = "Vehicle"))
+
+dt %>% 
+    distinct(study, mutation) %>% 
+    left_join(dt_study, by = c("study" = "Shortened_study_name")) %>% 
+    mutate(Study = ifelse(is.na(Study), "study2303", Study)) %>% 
+    select(Study,study, mutation) %>% 
+    `colnames<-`(c("Study", "Short_name", "Mutation")) %>%
+    write.xlsx(., "tables/table_study.xlsx")
+```
+
+
+
+# Save data
+
+```{r fix-timepoints}
+write_rds(dt, "clean-data.rds", "xz", compression = 9L)
+write.xlsx(dt, "clean-data-historic-gemms.xlsx")
+save.image("01-data.RData")
+```
+
+
+
+# Session info
+
+```{r ws-info, echo=FALSE, include = FALSE }
+sessionInfo()
+```

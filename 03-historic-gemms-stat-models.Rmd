@@ -1,0 +1,1044 @@
+---
+title: "Historic data in vehicle + AZD4625-treated P53 GEMMs"
+subtitle: Statistical analysis of all data
+author: "Gabriel Teku"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(emmeans)
+library(rstan)
+library(rstanarm)
+library(bayesplot)
+library(brms)
+library(loo)
+
+set.seed <- 1234
+
+## colourblind-friendly colours for ggplot
+cbb_palette <- c(
+  "#000000", "#E69F00", "#56B4E9", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#0099C6", "#C7A92A", "#009E73",
+  "#5A9F9F", "#F8766D", "#C49A00", "#F2C80F", "#993D3D",
+  "#4F5D75", "#0089A3", "#A8A878", "#63C5DA", "#79A779"
+)
+
+options(digits = 5, tibble.print_max = 10^6)
+
+if(file.exists("03-data.RData")) load("03-data.RData")
+```
+
+
+# Load cleaned data
+
+```{r load-cleaned-data, echo=FALSE}
+dt <- read_rds("clean-data.rds")
+dt <- dt %>% 
+    mutate(mutation = relevel(mutation, ref = "p53"),
+           trt = relevel(trt, ref = "Vehicle"),
+           timepoint = relevel(timepoint, "baseline")
+    )
+```
+
+
+# Statistical inference 
+
+## Fit Bayesian mixed effects model 
+
+Interested in picking up trt effects & effects of treatment over time. 
+Does this differ between mutation statuses?
+Consider study as random effect with sampling from the entire study space.
+
+### Vehicle vs AZD4625 mono
+
+```{r fit-vehicle-vs-azd4625mono}
+# Extract subset of data
+mod_df_4625mono <- dt %>% 
+    filter(trt %in% c("Vehicle", "AZD4625")) %>% 
+    # filter(!timepoint == "3weeks") %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove)) %>% 
+    droplevels()
+studies_df_4625mono <- mod_df_4625mono %>% distinct(study, mutation)
+studies_df_4625mono
+
+mod_df_4625mono_t1_t2 <- mod_df_4625mono %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625mono_t1_t2 <- mod_df_4625mono_t1_t2 %>% distinct(study, mutation)
+studies_df_4625mono_t1_t2
+
+# Fit model
+mod_4625mono <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                          data = mod_df_4625mono,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 5000)
+mod_4625mono_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                          data = mod_df_4625mono_t1_t2,
+                          adapt_delta = 0.999,
+                          seed = 1234,
+                          iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625mono)
+summary(mod_4625mono_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_4625mono)
+pp_check(mod_4625mono_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625mono <- as.matrix(mod_4625mono)
+mcmc_trace(posterior_mod_4625mono, regex_pars = "trt")
+
+posterior_mod_4625mono_t1_t2 <- as.matrix(mod_4625mono_t1_t2)
+mcmc_trace(posterior_mod_4625mono_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_4625mono)
+stan_diag(mod_4625mono_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625mono_ar <- mcmc_areas_ridges(posterior_mod_4625mono, 
+                       regex_pars = "trt",
+                       prob = 0.95) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 mono vs Vehicle: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625mono_ar
+ggsave("figures/fit-posterior-azd4625-vehicle.png", plt_4625mono_ar)
+
+plt_4625mono_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625mono, 
+    pars = vars(starts_with("trt"),
+                -c("trtAZD4625:timepoint2weeks:mutationstk11")
+    ),
+    prob = 0.95
+    ) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 mono vs Vehicle: all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold", size = 18)) 
+plt_4625mono_ar_no3way
+ggsave("figures/fit-posterior-azd4625-vehicle-no3way.png", 
+       plt_4625mono_ar_no3way)
+## plot baseline and 2 weeks
+plt_4625mono_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625mono_t1_t2,
+                                           regex_pars = "trt",
+                                           prob = 0.95) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 mono vs Vehicle: baseline and 2 weeks, all studies") +
+    ggtitle("AZD4625 mono vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold", size = 15))
+plt_4625mono_ar_t1_t2
+ggsave("figures/fit-posterior-azd4625mono-vehicle.png", plt_4625mono_ar_t1_t2)
+
+## plot baseline and 2 weeks without 3-way interactions
+plt_4625mono_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625mono_t1_t2,
+    pars = vars(starts_with("trt"),
+                - "trtAZD4625:timepoint2weeks:mutationstk11"
+    ),
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 mono vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    ggtitle("AZD4625 mono vs Vehicle: baseline and 2 weeks") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625mono_ar_t1_t2_no3way
+ggsave("figures/fit-posterior-azd4625mono-vehicle.png", 
+       plt_4625mono_ar_t1_t2_no3way)
+save.image("03-data.RData")
+```
+
+
+
+### Vehicle vs AZD4625 combo
+
+```{r fit-model-vehicle-vs-4625combo}
+# Extract subset of data
+mod_df_4625combo <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|AZD4625 +"))) %>%
+     # filter(!timepoint == "3weeks") %>%  
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625combo <- mod_df_4625combo %>% distinct(study, mutation)
+#
+mod_df_4625combo_t1_t2 <- mod_df_4625combo %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625combo_t1_t2 <- mod_df_4625combo_t1_t2 %>% 
+    distinct(study, mutation)
+
+# Fit model
+mod_4625combo <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                               (1|mutation/study),
+                           data = mod_df_4625combo,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 6000)
+mod_4625combo_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                          data = mod_df_4625combo_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625combo) %>% head()
+summary(mod_4625combo) %>% tail()
+summary(mod_4625combo_t1_t2) %>% head()
+summary(mod_4625combo_t1_t2) %>% tail()
+mod_4625combo
+mod_4625combo_t1_t2
+
+## Posterior Predictive Checks
+pp_check(mod_4625combo)
+pp_check(mod_4625combo_t1_t2)
+
+## Model performance
+# (loo_4625combo <- loo(mod_4625combo, k_threshold = 0.7))
+(loo_4625combo_t1_t2 <- loo(mod_4625combo_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_4625combo <- as.matrix(mod_4625combo)
+mcmc_trace(posterior_mod_4625combo, regex_pars = "trt")
+
+posterior_mod_4625combo_t1_t2 <- as.matrix(mod_4625combo_t1_t2)
+mcmc_trace(posterior_mod_4625combo_t1_t2, regex_pars = "trt")
+
+## Model performance
+(loo_4625combo_t1_t2 <- loo(mod_4625combo_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625combo)
+stan_diag(mod_4625combo_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625combo_ar <- mcmc_areas_ridges(posterior_mod_4625combo, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD4625 combo vs Vehicle: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_ar 
+ggsave("figures/fit-posterior-azd4625combo-vs-vehicle.png", plt_4625combo_ar)
+
+plt_4625combo_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625combo, 
+    pars = vars(starts_with("trt"),
+                -"trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11"
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 combo vs Vehicle: all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_ar_no3way 
+ggsave("figures/fit-posterior-azd4625combo-vs-vehicle-no3way.png",
+       plt_4625combo_ar_no3way)
+
+plt_4625combo_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625combo_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD4625 combo vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_ar_t1_t2 
+ggsave("figures/fit-posterior-azd4625combo-vs-vehicle-t1-t2.png",
+       plt_4625combo_ar_t1_t2)
+
+plt_4625combo_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625combo_t1_t2, 
+    pars = vars(starts_with("trt"),
+                -"trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11"
+    ),
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625 combo vs Vehicle: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625combo_ar_t1_t2_no3way 
+ggsave("figures/fit-posterior-azd4625combo-vs-vehicle-t1-t2-no3way.png",
+       plt_4625combo_ar_t1_t2_no3way)
+
+save.image("03-data.RData")
+```
+
+
+
+### Vehicle vs AZD4625 mono + combo
+
+```{r fit-model-vehicle-vs-4625moco}
+# Extract subset of data
+mod_df_4625moco <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|AZD4625"))) %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625moco <- mod_df_4625moco %>% distinct(study, mutation)
+#
+mod_df_4625moco_t1_t2 <- mod_df_4625moco %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625moco_t1_t2 <- mod_df_4625moco_t1_t2 %>% distinct(study, mutation)
+
+# Fit model
+mod_4625moco <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                           data = mod_df_4625moco,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625moco_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                                    (1|mutation/study),
+                          data = mod_df_4625moco_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625moco) 
+summary(mod_4625moco_t1_t2) 
+mod_4625moco
+mod_4625moco_t1_t2
+
+## Posterior Predictive Checks
+pp_check(mod_4625moco)
+pp_check(mod_4625moco_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625moco <- as.matrix(mod_4625moco)
+mcmc_trace(posterior_mod_4625moco, regex_pars = "trt")
+
+posterior_mod_4625moco_t1_t2 <- as.matrix(mod_4625moco_t1_t2)
+mcmc_trace(posterior_mod_4625moco_t1_t2, regex_pars = "trt")
+
+## Model performance
+(loo_4625moco <- loo(mod_4625moco, k_threshold = 0.7))
+(loo_4625moco_t1_t2 <- loo(mod_4625moco_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625moco)
+stan_diag(mod_4625moco_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625moco_ar <- mcmc_areas_ridges(posterior_mod_4625moco, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs AZD4625 mono + combo: all studies") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_ar 
+ggsave("figures/fit-posterior-azd4625moco-vs-vehicle.png", plt_4625moco_ar)
+#
+plt_4625moco_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625moco, 
+    pars = vars(
+        starts_with("trt"),
+        -c("trtAZD4625:timepoint2weeks:mutationstk11",
+           "trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs AZD4625 mono + combo: all studies",
+         caption = "Dropped 3-way interactions") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_ar_no3way 
+ggsave("figures/fit-posterior-azd4625moco-vs-vehicle-no3way.png",
+       plt_4625moco_ar_no3way)
+#
+plt_4625moco_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625moco_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs AZD4625 mono + combo: baseline and 2 weeks, all studies") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_ar_t1_t2 
+ggsave("figures/fit-posterior-azd4625moco-vs-vehicle-t1-t2.png",
+       plt_4625moco_ar_t1_t2)
+#
+plt_4625moco_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625moco_t1_t2, 
+    pars = vars(
+        starts_with("trt"),
+        -c("trtAZD4625:timepoint2weeks:mutationstk11",
+           "trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Vehicle vs AZD4625 mono + combo: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625moco_ar_t1_t2_no3way
+ggsave("figures/fit-posterior-azd4625moco-vs-vehicle-t1-t2-no3way.png",
+       plt_4625moco_ar_t1_t2_no3way)
+save.image("03-data.RData")
+```
+
+
+
+### AZD4625 mono vs AZD4625 combo
+
+```{r fit-model-4625-vs-4625combo}
+# Extract subset of data
+mod_df_4625monoco <- dt %>% 
+    filter(str_detect(trt, c("AZD4625"))) %>%
+    mutate(trt = relevel(trt, ref = "AZD4625")) %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625monoco <- mod_df_4625monoco %>% distinct(study, mutation)
+#
+mod_df_4625monoco_t1_t2 <- mod_df_4625monoco %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625monoco_t1_t2 <- mod_df_4625monoco_t1_t2 %>% distinct(study, mutation)
+
+# Fit model
+mod_4625monoco <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                           data = mod_df_4625monoco,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625monoco_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                                    (1|mutation/study),
+                          data = mod_df_4625monoco_t1_t2,
+                          adapt_delta = 0.9999,
+                          seed = 1234,
+                          iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625monoco) 
+summary(mod_4625monoco_t1_t2) 
+mod_4625monoco
+mod_4625monoco_t1_t2
+
+## Posterior Predictive Checks
+pp_check(mod_4625monoco)
+pp_check(mod_4625monoco_t1_t2)
+
+## Generate trace plots
+posterior_mod_4625monoco <- as.matrix(mod_4625monoco)
+mcmc_trace(posterior_mod_4625monoco, regex_pars = "trt")
+
+posterior_mod_4625monoco_t1_t2 <- as.matrix(mod_4625monoco_t1_t2)
+mcmc_trace(posterior_mod_4625monoco_t1_t2, regex_pars = "trt")
+
+## Model performance
+(loo_4625monoco <- loo(mod_4625monoco, k_threshold = 0.7))
+(loo_4625monoco_t1_t2 <- loo(mod_4625monoco_t1_t2, k_threshold = 0.7))
+
+## More diagnostics
+stan_diag(mod_4625monoco)
+stan_diag(mod_4625monoco_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625monoco_ar <- mcmc_areas_ridges(posterior_mod_4625monoco, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "AZD4625 mono vs AZD4625 combo: all studies") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_ar 
+ggsave("figures/fit-posterior-azd4625combo-vs-azd4625mono.png",
+       plt_4625monoco_ar)
+#
+plt_4625monoco_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625monoco, 
+    pars = vars(
+        starts_with("trt"),
+        -c("trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "AZD4625 mono vs AZD4625 combo: all studies",
+         caption = "Dropped 3-way interactions") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_ar_no3way 
+ggsave("figures/fit-posterior-azd4625combo-vs-azd4625mono-no3way.png",
+       plt_4625monoco_ar_no3way)
+#
+plt_4625monoco_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625monoco_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "AZD4625 mono vs AZD4625 combo: baseline and 2 weeks, all studies") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_ar_t1_t2 
+ggsave("figures/fit-posterior-azd4625combo-vs-azd4625mono-t1-t2.png",
+       plt_4625monoco_ar_t1_t2)
+#
+plt_4625monoco_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625monoco_t1_t2, 
+    pars = vars(
+        starts_with("trt"),
+        -c("trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "AZD4625 mono vs AZD4625 combo: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625monoco_ar_t1_t2_no3way
+ggsave("figures/fit-posterior-azd4625combo-vs-azd4625mono-t1-t2-no3way.png",
+       plt_4625monoco_ar_t1_t2_no3way)
+save.image("03-data.RData")
+```
+
+
+
+### AZD4625 vs All Other treatments
+
+```{r fit-4625ref-vs-trts}
+# Subset data
+mod_df_4625ref <- dt %>% 
+    mutate(trt = relevel(trt, ref = "AZD4625")) %>% 
+    # filter(!timepoint == "3weeks")  %>% 
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625ref <- mod_df_4625ref %>% distinct(study, mutation)
+
+mod_df_4625ref_t1_t2 <- mod_df_4625ref %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625ref_t1_t2 <- mod_df_4625ref_t1_t2 %>% distinct(study, mutation)
+
+# Fit model
+mod_4625ref <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                               (1|mutation/study),
+                           data = mod_df_4625ref,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+mod_4625ref_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                               (1|mutation/study),
+                           data = mod_df_4625ref_t1_t2,
+                           adapt_delta = 0.9999,
+                           seed = 1234,
+                           iter = 5000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625ref) 
+summary(mod_4625ref_t1_t2)
+mod_4625ref
+mod_4625ref_t1_t2
+
+## Posterior Predictive Checks
+pp_check(mod_4625ref)
+pp_check(mod_4625ref_t1_t2)
+
+## Model performance
+# (loo_4625ref <- loo(mod_4625ref, k_threshold = 0.7))
+# (loo_4625ref_t1_t2 <- loo(mod_4625ref_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_4625ref <- as.matrix(mod_4625ref)
+mcmc_trace(posterior_mod_4625ref, regex_pars = "trt")
+
+posterior_mod_4625ref_t1_t2 <- as.matrix(mod_4625ref_t1_t2)
+mcmc_trace(posterior_mod_4625ref_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_4625ref)
+stan_diag(mod_4625ref_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625ref_ar <- mcmc_areas_ridges(posterior_mod_4625ref, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    xlab("Change in log voxels against AZD4625") +
+    ggtitle("AZD4625 mono vs All Other Treatments: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_ar 
+ggsave("figures/fit-posterior-trts-vs-azd4625ref.png", plt_4625ref_ar)
+
+plt_4625ref_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625ref, 
+    pars = vars(starts_with("trt"),
+                -c("trtVehicle:timepoint2weeks:mutationstk11",
+                   "trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "AZD4625 mono vs All Other Treatments: all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_ar_no3way 
+ggsave("figures/fit-posterior-trts-vs-azd4625ref-no3way.png",
+       plt_4625ref_ar_no3way)
+
+plt_4625ref_ar_t1_t2 <- mcmc_areas_ridges(
+    posterior_mod_4625ref_t1_t2, 
+    pars = vars(starts_with("trt")), 
+    prob = 0.95
+) +
+    xlab("Change in log voxels against AZD4625") +
+    ggtitle("Treatments vs AZD4625: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_ar_t1_t2 
+ggsave("figures/fit-posterior-trts-vs-azd4625ref-t1-t2.png",
+       plt_4625ref_ar_t1_t2)
+
+plt_4625ref_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625ref_t1_t2, 
+    pars = vars(starts_with("trt"),
+                -c("trtVehicle:timepoint2weeks:mutationstk11", 
+                   "trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against AZD4625",
+         title = "Treatments vs AZD4625: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625ref_ar_t1_t2_no3way 
+ggsave("figures/fit-posterior-trts-vs-azd4625ref-t1-t2-no3way.png",
+       plt_4625ref_ar_t1_t2_no3way)
+
+save.image("03-data.RData")
+```
+
+
+### Vehicle vs AZD6738 mono + combo
+
+```{r fit-model-vehicle-vs-6738_moco}
+# Extract subset of data
+mod_df_6738moco <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|AZD6738"))) %>% 
+    # filter(!timepoint == "3weeks")  %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_6738moco <- mod_df_6738moco %>% distinct(study, mutation)
+
+mod_df_6738moco_t1_t2 <- mod_df_6738moco %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_6738moco_t1_t2 <- mod_df_6738moco_t1_t2 %>% distinct(study, mutation)
+
+# Fit model
+mod_6738moco <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                   data = mod_df_6738moco,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+mod_6738moco_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                   data = mod_df_6738moco_t1_t2,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_6738moco)
+summary(mod_6738moco_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_6738moco)
+pp_check(mod_6738moco_t1_t2)
+
+## Model performance
+(loo_6738moco_t1_t2 <- loo(mod_6738moco_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_6738moco <- as.matrix(mod_6738moco)
+mcmc_trace(posterior_mod_6738moco, regex_pars = "trt")
+
+posterior_mod_6738moco_t1_t2 <- as.matrix(mod_6738moco_t1_t2)
+mcmc_trace(posterior_mod_6738moco_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_6738moco)
+stan_diag(mod_6738moco_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_6738moco_ar <- mcmc_areas_ridges(posterior_mod_6738moco, 
+                                          regex_pars = "trt", 
+                                          prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD6738 combo + mono vs Vehicle: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_6738moco_ar 
+ggsave("figures/fit-posterior-azd6738-mono-combo-vs-vehicle.png",
+       plt_6738moco_ar)
+#
+plt_6738moco_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_6738moco_t1_t2, 
+                                          regex_pars = "trt", 
+                                          prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD6738 combo + mono vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_6738moco_ar_t1_t2
+ggsave("figures/fit-posterior-azd6738-mono-combo-vs-vehicle-t1-t2.png",
+       plt_6738moco_ar_t1_t2)
+
+save.image("03-data.RData")
+```
+
+ 
+
+### Vehicle vs Cisplatin mono + combo
+
+```{r fit-model-vehicle-vs-cisplatin-moco}
+# Extract subset of data
+mod_df_cis_moco <- dt %>% 
+    filter(str_detect(trt, c("Vehicle|Cisplatin"))) %>% 
+    # filter(!timepoint == "3weeks")  %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_cis_moco <- mod_df_cis_moco %>% distinct(study, mutation)
+
+mod_df_cis_moco_t1_t2 <- mod_df_cis_moco %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_cis_moco_t1_t2 <- mod_df_cis_moco_t1_t2 %>% distinct(study, mutation)
+
+# Fit model
+mod_cis_moco <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                   data = mod_df_cis_moco,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+mod_cis_moco_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                              (1|mutation/study),
+                   data = mod_df_cis_moco_t1_t2,
+                   adapt_delta = 0.9999,
+                  seed = 1234,
+                   iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_cis_moco) 
+summary(mod_cis_moco_t1_t2)
+
+## Posterior Predictive Checks
+pp_check(mod_cis_moco)
+pp_check(mod_cis_moco_t1_t2)
+
+## Model performance
+(loo_cis_moco <- loo(mod_cis_moco, k_threshold = 0.7))
+(loo_cis_moco_t1_t2 <- loo(mod_cis_moco_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_cis_moco <- as.matrix(mod_cis_moco)
+mcmc_trace(posterior_mod_cis_moco, regex_pars = "trt")
+
+posterior_mod_cis_moco_t1_t2 <- as.matrix(mod_cis_moco_t1_t2)
+mcmc_trace(posterior_mod_cis_moco_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_cis_moco)
+stan_diag(mod_cis_moco_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_cis_moco_ar <- mcmc_areas_ridges(posterior_mod_cis_moco, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("Cisplatin combo + mono vs Vehicle: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_moco_ar
+ggsave("figures/fit-posterior-cisplatin-mono-combo-vs-vehicle.png",
+       plt_cis_moco_ar)
+#
+plt_cis_moco_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_cis_moco, 
+    pars = vars(starts_with("trt"),
+                -c("trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Cisplatin combo + mono vs Vehicle: all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_moco_ar_no3way
+ggsave("figures/fit-posterior-cisplatin-mono-combo-vs-vehicle-no3way.png",
+       plt_cis_moco_ar_no3way)
+#
+plt_cis_moco_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_cis_moco_t1_t2, 
+                                  regex_pars = "trt", 
+                                  prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("Cisplatin combo + mono vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_moco_ar_t1_t2
+ggsave("figures/fit-posterior-cisplatin-mono-combo-vs-vehicle-t1-t2.png",
+       plt_cis_moco_ar_t1_t2)
+#
+plt_cis_moco_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_cis_moco_t1_t2, 
+    pars = vars(starts_with("trt"),
+                -c("trtAZD4625 + Cisplatin:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "Cisplatin combo + mono vs Vehicle: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_cis_moco_ar_t1_t2_no3way
+ggsave("figures/fit-posterior-cisplatin-mono-combo-vs-vehicle-t1-t2-no3way.png",
+       plt_cis_moco_ar_t1_t2_no3way)
+
+save.image("03-data.RData")
+```
+
+
+
+### Vehicle vs AZD4625, Cisplatin, Cisplatin + PD-L1 combo
+
+```{r fit_model_veh_4625_cisplatin-moco}
+# Extract subset of data
+mod_df_4625cis_moco <- dt %>% 
+    filter(
+        trt %in% c("Vehicle", "AZD4625", "Cisplatin", "Cisplatin + PD-L1")
+    ) %>%
+    # filter(!timepoint == "3weeks")  %>%
+    group_by(trt, timepoint, mutation) %>% 
+    mutate(perc_na = sum(is.na(log_voxels)) / n(),
+           na_remove = perc_na > 0.5) %>% 
+    filter(!na_remove) %>% 
+    filter(n() >= 3) %>% 
+    ungroup() %>% 
+    select(-c(perc_na, na_remove))
+studies_df_4625cis_moco <- mod_df_4625cis_moco %>% distinct(study, mutation)
+
+mod_df_4625cis_moco_t1_t2 <- mod_df_4625cis_moco %>% 
+    filter(timepoint %in% c("baseline", "2weeks") )
+studies_df_4625cis_moco_t1_t2 <- mod_df_4625cis_moco_t1_t2 %>% 
+    distinct(study, mutation)
+
+# Fit model
+mod_4625cis_moco <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                                  (1|mutation/study),
+                              data = mod_df_4625cis_moco,
+                              adapt_delta = 0.9999,
+                              seed = 1234,
+                              iter = 6000)
+mod_4625cis_moco_t1_t2 <- stan_lmer(log_voxels ~ trt * timepoint * mutation +
+                                  (1|mutation/study),
+                              data = mod_df_4625cis_moco_t1_t2,
+                              adapt_delta = 0.9999,
+                              seed = 1234,
+                              iter = 6000)
+
+# Diagnostics ---------------------------------------------------------------
+## Evaluate convergence
+summary(mod_4625cis_moco) 
+summary(mod_4625cis_moco_t1_t2) 
+
+## Posterior Predictive Checks
+pp_check(mod_4625cis_moco)
+pp_check(mod_4625cis_moco_t1_t2)
+
+## Model performance
+(loo_4625cis_moco <- loo(mod_4625cis_moco, k_threshold = 0.7))
+(loo_4625cis_moco_t1_t2 <- loo(mod_4625cis_moco_t1_t2, k_threshold = 0.7))
+
+## Generate trace plots
+posterior_mod_4625cis_moco <- as.matrix(mod_4625cis_moco)
+mcmc_trace(posterior_mod_4625cis_moco, regex_pars = "trt")
+
+posterior_mod_4625cis_moco_t1_t2 <- as.matrix(mod_4625cis_moco_t1_t2)
+mcmc_trace(posterior_mod_4625cis_moco_t1_t2, regex_pars = "trt")
+
+## More diagnostics
+stan_diag(mod_4625cis_moco)
+stan_diag(mod_4625cis_moco_t1_t2)
+
+# Extract posterior samples -------------------------------------------------
+plt_4625cis_moco_ar <- mcmc_areas_ridges(posterior_mod_4625cis_moco, 
+                                              regex_pars = "trt", 
+                                              prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD4625, Cisplatin, Cisplatin + PD-L1 vs Vehicle: all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_ar 
+ggsave("figures/fit-posterior-4625cisplatin-moco-vs-vehicle.png",
+       plt_4625cis_moco_ar)
+#
+plt_4625cis_moco_ar_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625cis_moco, 
+    pars = vars(starts_with("trt"), 
+                -c("trtAZD4625:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625, Cisplatin, Cisplatin + PD-L1 vs Vehicle: all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_ar_no3way 
+ggsave("figures/fit-posterior-4625cisplatin-moco-vs-vehicle-no3way.png",
+       plt_4625cis_moco_ar_no3way)
+#
+plt_4625cis_moco_ar_t1_t2 <- mcmc_areas_ridges(posterior_mod_4625cis_moco_t1_t2, 
+                                              regex_pars = "trt", 
+                                              prob = 0.95) +
+    xlab("Change in log voxels against Vehicle") +
+    ggtitle("AZD4625, Cisplatin, Cisplatin + PD-L1 vs Vehicle: baseline and 2 weeks, all studies") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_ar_t1_t2 
+ggsave("figures/fit-posterior-4625cisplatin-moco-vs-vehicle-t1-t2.png",
+       plt_4625cis_moco_ar_t1_t2)
+#
+plt_4625cis_moco_ar_t1_t2_no3way <- mcmc_areas_ridges(
+    posterior_mod_4625cis_moco_t1_t2, 
+    pars = vars(starts_with("trt"),
+                -c("trtAZD4625:timepoint2weeks:mutationstk11",
+                   "trtCisplatin:timepoint2weeks:mutationstk11")
+    ), 
+    prob = 0.95
+) +
+    labs(x = "Change in log voxels against Vehicle",
+         title = "AZD4625, Cisplatin, Cisplatin + PD-L1 vs Vehicle: baseline and 2 weeks, all studies",
+         caption = "Dropped 3-way interactions") +
+    geom_vline(aes(xintercept = 0), linetype = "dashed", color = "red") +
+    theme_bw() +
+    theme(text = element_text(face = "bold"))
+plt_4625cis_moco_ar_t1_t2_no3way 
+ggsave("figures/fit-posterior-4625cisplatin-moco-vs-vehicle-t1-t2-no3way.png",
+       plt_4625cis_moco_ar_t1_t2_no3way)
+
+save.image("03-data.RData")
+```
+
+
+## Conclusions for all fitted models above
+
+All MCSEs were 0.0 except for log-posterior, which is 0.1. Thus, no sample had substantial level of noise. 
+
+Rhat values were all 1.0, indicating convergence and equilibrium of
+simulated chains. 
+
+The size of the ESSs were large, suggesting the simulated
+chains were well mixed. 
+
+The trace plots confirm convergence and mixing.   
+
+The posterior predictive plots shows fairly close agreement between the model 
+and data. The results of the `loo(.)` suggests that the predictive performance
+of the fitted models were well assessed.   
+
+The diagnostic plots indicates fairly explored posterior distribution.   
+
+
+
+# Session info
+
+```{r ws-info, echo=FALSE, include = FALSE }
+save.image("03-data.RData")
+
+sessionInfo()
+```
