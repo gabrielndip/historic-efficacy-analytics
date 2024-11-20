@@ -1,131 +1,95 @@
+# Historic GEMMS Analysis Workflow
 
-# Historic efficacious data integration and "meta-analytics"
+This repository contains a series of R Markdown and R script files designed to process, analyze, visualize, and model data from the historic GEMMS dataset. Each file corresponds to a specific stage of the analysis pipeline, offering a structured approach to understanding and interpreting the data.
 
-## Historic GEMMs Data Preparation (01-historic-gemms-data-prep.Rmd)
+## Table of Contents
 
-This contains the R code and resources for preparing historical data from vehicle- and Alpha-treated genetically engineered mouse models (GEMMs). The workflow includes data loading, cleaning, wrangling, and integration of mutation data, as well as saving the processed datasets for downstream analysis.
+	•	Overview
+	•	File Descriptions
+	•	Getting Started
+	•	Dependencies
+	•	Usage
+	•	Contributing
+	•	License
 
-### Table of Contents
+## Overview
 
-1. [Overview](#overview)
-2. [Requirements](#requirements)
-3. [Files and Structure](#files-and-structure)
-4. [Usage](#usage)
-5. [Outputs](#outputs)
-6. [Reproducibility](#reproducibility)
-7. [Acknowledgments](#acknowledgments)
+The analysis pipeline for the historic GEMMS dataset includes the following steps:
+	1.	Data preparation and cleaning.
+	2.	Exploratory data visualization.
+	3.	Statistical model development and evaluation.
+	4.	Advanced visualization and statistical extensions.
+	5.	Post-hoc contrasts for statistical comparisons.
 
-### Overview
+The repository is structured to allow independent execution of each step or the entire workflow.
 
-The primary script, `01-historic-gemms-data-prep.Rmd`, performs the following tasks:
-- Loads and preprocesses raw `.csv` data files from the GEMM studies.
-- Cleans and standardizes key variables such as timepoints and study identifiers.
-- Integrates mutation data from an external Excel file.
-- Outputs cleaned data in multiple formats for flexibility in analysis.
+## File Descriptions
 
-### Requirements
+01-historic-gemms-data-prep.Rmd
 
-The following R packages are required to run the code:
-- `tidyverse`: For data manipulation and wrangling.
-- `openxlsx`: For reading and writing Excel files.
-- `readr`: For reading `.csv` files.
-- Base R utilities like `tools`, `stringr`, and `forcats`.
+	•	Description: Prepares and cleans the GEMMS dataset for analysis. Includes data import, cleaning, and transformation steps.
+	•	Output: A clean dataset ready for further analysis.
 
-Make sure R version 4.0.0 or later is installed.
+02-historic-gemms-viz.Rmd
 
-### Files and Structure
+	•	Description: Focuses on exploratory data visualization to uncover patterns and trends within the dataset.
+	•	Output: A variety of visualizations for data exploration.
 
-- **`01-historic-gemms-data-prep.Rmd`**: The main R Markdown script for data preparation.
-- **`data/`**: Directory containing raw `.csv` data files for individual GEMM studies.
-- **`mut-data.xlsx`**: External Excel file with mutation data linked to the studies.
-- **`clean-data/`**: Directory to save intermediate and processed data files.
-- **`tables/`**: Directory for summary tables exported as `.xlsx` files.
+03-historic-gemms-stat-models.Rmd
 
-### Usage
+	•	Description: Fits and evaluates statistical models based on the prepared GEMMS dataset. Provides insights through model diagnostics and summary metrics.
+	•	Output: Statistical results and visualizations of model performance.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/username/historic-gemms-data-prep.git
+04-historic-gemms-viz-se.Rmd
 
-	2.	Open 01-historic-gemms-data-prep.Rmd in RStudio.
-	3.	Ensure the data/ directory contains the necessary raw .csv files.
-	4.	Run the R Markdown script to generate processed datasets and summary tables.
+	•	Description: Extends data visualization by incorporating additional statistical elements such as standard errors and confidence intervals.
+	•	Output: Enhanced visualizations with statistical annotations.
 
-Outputs
+05-historic-gemms-stat-models-se.Rmd
 
-	•	Cleaned Data:
-	•	clean-data.rds: Compressed RDS file for quick loading in R.
-	•	clean-data-historic-gemms.xlsx: Excel file with processed data.
-	•	Summary Tables:
-	•	tables/table_study.xlsx: Maps study identifiers to their mutations.
-	•	Saved Environment:
-	•	01-data.RData: The full R environment for reproducibility.
+	•	Description: Builds on the statistical modeling in 03-historic-gemms-stat-models.Rmd by incorporating standard error analysis and uncertainty quantification.
+	•	Output: Advanced statistical summaries and uncertainty assessments.
 
-Reproducibility
+06-historic-gemms-contrasts.R
 
-The script ensures reproducibility by:
-	•	Documenting all steps in the R Markdown file.
-	•	Saving the R environment (.RData) and session information (sessionInfo()).
-	•	Using consistent random seeds for reproducibility of random operations.
+	•	Description: Implements post-hoc contrasts for statistical comparisons between groups. The script provides a detailed framework for generating contrasts and interpreting group differences within the GEMMS dataset.
+	•	Output: Group comparisons with calculated contrast statistics and visualization of the results.
 
+## Getting Started
 
+	1.	Clone the repository:git clone https://github.com/yourusername/historic-gemms-analysis.git
+	2.	Install the required R packages (listed in Dependencies).
+	3.	Open the R Markdown files or the R script in RStudio to execute the analysis.
 
-## Historic GEMMs Data Visualization (02-historic-gemms-viz.Rmd)
+## Dependencies
 
-This contains the R code and resources for exploring and visualizing historical data from vehicle- and Alpha-treated P53 GEMMs (genetically engineered mouse models). The workflow includes exploratory data analysis (EDA) and the creation of publication-quality visualizations.
+The following R packages are required to run the analysis:
+	•	tidyverse
+	•	ggplot2
+	•	dplyr
+	•	broom
+	•	readr
+	•	knitr
+	•	rmarkdown
+	•	emmeans
 
-### Table of Contents
+Install the packages with:
 
-1. [Overview](#overview)
-2. [Requirements](#requirements)
-3. [Files and Structure](#files-and-structure)
-4. [Usage](#usage)
-5. [Outputs](#outputs)
-6. [Reproducibility](#reproducibility)
-7. [Acknowledgments](#acknowledgments)
+install.packages(c("tidyverse", "ggplot2", "dplyr", "broom", "readr", "knitr", "rmarkdown", "emmeans"))
 
-### Overview
+Additional packages may be required for specific files; please refer to the top of each file for specific library calls.
 
-The primary script, `02-historic-gemms-viz.Rmd`, performs the following tasks:
-- Loads pre-cleaned GEMM datasets.
-- Explores the data through summary statistics, visualizations, and basic exploratory analyses.
-- Creates publication-ready plots, including histograms and treatment-specific analyses.
+## Usage
 
-### Requirements
+	1.	Data Preparation: Start with 01-historic-gemms-data-prep.Rmd to clean and transform the dataset.
+	2.	Exploratory Visualization: Use 02-historic-gemms-viz.Rmd to generate initial visualizations.
+	3.	Statistical Modeling: Execute 03-historic-gemms-stat-models.Rmd to fit and evaluate statistical models.
+	4.	Advanced Visualization: Run 04-historic-gemms-viz-se.Rmd for detailed visualizations with statistical elements.
+	5.	Extended Statistical Analysis: Execute 05-historic-gemms-stat-models-se.Rmd for advanced statistical insights.
+	6.	Post-Hoc Contrasts: Use 06-historic-gemms-contrasts.R to perform group comparisons and analyze differences using post-hoc contrast methods.
 
-The following R packages are required to run the code:
-- `tidyverse`: For data manipulation and visualization.
-- Base R utilities like `stringr` and `purrr`.
+Knit R Markdown files to generate HTML or PDF outputs for reporting, and run the R script for specific statistical tasks.
 
-Ensure R version 4.0.0 or later is installed.
+## License
 
-### Files and Structure
-
-- **`02-historic-gemms-viz.Rmd`**: The main R Markdown script for data exploration and visualization.
-- **`clean-data.rds`**: Pre-cleaned data from the data preparation step.
-- **`figures/`**: Directory for saving generated figures.
-
-### Usage
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/username/historic-gemms-data-viz.git
-
-	2.	Open 02-historic-gemms-viz.Rmd in RStudio.
-	3.	Ensure clean-data.rds is available in the working directory.
-	4.	Run the R Markdown script to generate exploratory analyses and visualizations.
-
-Outputs
-
-	•	Exploratory Analyses:
-	•	Summary statistics for treatments across multiple studies.
-	•	Histograms of key variables such as voxels and log_voxels.
-	•	Figures:
-	•	All visualizations are saved in the figures/ directory for easy access and reuse.
-
-Reproducibility
-
-The script ensures reproducibility by:
-	•	Using a consistent random seed and options for visualization.
-	•	Documenting all steps within the R Markdown file.
-	•	Dynamically creating and cleaning the figures/ directory to prevent conflicts.
+This project is licensed under the MIT License. See the LICENSE file for more details.
